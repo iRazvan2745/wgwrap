@@ -1,0 +1,6 @@
+root:x:0:
+nginx:x:101:
+app:x:1000:
+audio:x:29:app,other
+video:x:44:other,app
+staff:x:50:

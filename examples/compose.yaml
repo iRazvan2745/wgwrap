@@ -1,0 +1,24 @@
+# Build the image first:  wgwrap build nginx:latest -t nginx-wg
+services:
+  web:
+    image: nginx-wg
+    cap_add: [NET_ADMIN]
+    # user: "101"            # DON'T: use WGWRAP_USER instead, wgwrap needs to start as root
+    environment:
+      WG_WAIT_HANDSHAKE: 10s
+    volumes:
+      - ./wg0.conf:/etc/wireguard/wg0.conf:ro
+
+  # Userspace mode (no wireguard kernel module on the host), full tunnel:
+  app:
+    image: alpine-wg
+    command: ["sleep", "infinity"]
+    cap_add: [NET_ADMIN]
+    devices: ["/dev/net/tun"]
+    sysctls:
+      net.ipv4.conf.all.src_valid_mark: 1
+      net.ipv6.conf.default.disable_ipv6: 0
+    environment:
+      WG_MODE: userspace
+    volumes:
+      - ./wg0-full.conf:/etc/wireguard/wg0.conf:ro

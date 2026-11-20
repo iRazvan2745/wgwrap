@@ -1,0 +1,41 @@
+# Tasks: mise run build|test|lint|image|image-multiarch|integration
+# Override with env vars, e.g. INIT_IMAGE=ghcr.io/you/wgwrap-init mise run build
+[env]
+CGO_ENABLED = "0"
+INIT_IMAGE = "{{ get_env(name='INIT_IMAGE', default='wgwrap-init') }}"
+PLATFORMS = "{{ get_env(name='PLATFORMS', default='linux/amd64,linux/arm64,linux/arm/v7') }}"
+GO_IMAGE = "{{ get_env(name='GO_IMAGE', default='golang:1.26-alpine') }}"
+VERSION = "{{ get_env(name='VERSION', default=exec(command='git describe --tags --always --dirty 2>/dev/null || echo dev')) }}"
+
+[tasks.build]
+description = "Build bin/wgwrap-init and bin/wgwrap"
+run = """
+ldflags="-s -w -X main.version=$VERSION -X main.defaultInitImage=$INIT_IMAGE"
+go build -trimpath -ldflags="$ldflags" -o bin/wgwrap-init ./cmd/wgwrap-init
+go build -trimpath -ldflags="$ldflags" -o bin/wgwrap ./cmd/wgwrap
+"""
+
+[tasks.test]
+description = "Unit tests"
+run = "go test ./..."
+
+[tasks.lint]
+description = "gofmt, go vet, staticcheck (if installed)"
+run = """
+test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+go vet ./...
+if command -v staticcheck >/dev/null; then staticcheck ./...; else echo "staticcheck not installed, skipping"; fi
+"""
+
+[tasks.image]
+description = "Local single-platform wgwrap-init image, loaded into the docker image store"
+run = "docker buildx build --build-arg VERSION=$VERSION --build-arg GO_IMAGE=$GO_IMAGE -t $INIT_IMAGE:$VERSION --load ."
+
+[tasks.image-multiarch]
+description = "Multi-arch wgwrap-init image, pushed (INIT_IMAGE=ghcr.io/you/wgwrap-init)"
+run = "docker buildx build --platform $PLATFORMS --build-arg VERSION=$VERSION --build-arg GO_IMAGE=$GO_IMAGE -t $INIT_IMAGE:$VERSION --push ."
+
+[tasks.integration]
+description = "Docker end-to-end tests"
+depends = ["build", "image"]
+run = "INIT_IMAGE=$INIT_IMAGE:$VERSION WGWRAP=./bin/wgwrap ./test/integration.sh"
