@@ -50,10 +50,21 @@ jobs:
         env:
           TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          set -o pipefail # so a failing curl in "curl | jq" fails the step
           api="$GITHUB_SERVER_URL/api/v1/repos/$GITHUB_REPOSITORY"
-          body=$(printf 'Init image: `%s:%s` (linux/amd64, arm64, arm/v7)\n\n```\nwgwrap build nginx:latest -t nginx-wg\ndocker run --cap-add NET_ADMIN -v ./wg0.conf:/etc/wireguard/wg0.conf:ro nginx-wg\n```\n' "$INIT_IMAGE" "$VERSION")
-          id=$(jq -n --arg tag "$VERSION" --arg body "$body" '{tag_name: $tag, name: $tag, body: $body}' |
-            curl -sSf -X POST -H "Authorization: token $TOKEN" -H "Content-Type: application/json" -d @- "$api/releases" | jq -r .id)
+          auth="Authorization: token $TOKEN"
+          # Reuse a release created in the UI (keeping its notes), otherwise create one.
+          if ! id=$(curl -sSf -H "$auth" "$api/releases/tags/$VERSION" | jq -r .id); then
+            body=$(printf 'Init image: `%s:%s` (linux/amd64, arm64, arm/v7)\n\n```\nwgwrap build nginx:latest -t nginx-wg\ndocker run --cap-add NET_ADMIN -v ./wg0.conf:/etc/wireguard/wg0.conf:ro nginx-wg\n```\n' "$INIT_IMAGE" "$VERSION")
+            id=$(jq -n --arg tag "$VERSION" --arg body "$body" '{tag_name: $tag, name: $tag, body: $body}' |
+              curl -sSf -X POST -H "$auth" -H "Content-Type: application/json" -d @- "$api/releases" | jq -r .id)
+          fi
+          existing=$(curl -sSf -H "$auth" "$api/releases/$id/assets")
           for f in dist/*; do
-            curl -sSf -X POST -H "Authorization: token $TOKEN" -F "attachment=@$f" "$api/releases/$id/assets?name=$(basename "$f")" >/dev/null
+            name=$(basename "$f")
+            # Replace an asset of the same name, so re-runs work.
+            old=$(jq -r --arg n "$name" '.[] | select(.name == $n) | .id' <<<"$existing")
+            [ -z "$old" ] || curl -sSf -X DELETE -H "$auth" "$api/releases/$id/assets/$old"
+            curl -sSf -X POST -H "$auth" -F "attachment=@$f" "$api/releases/$id/assets?name=$name" >/dev/null
           done
+          echo "Published $(ls dist | wc -l) assets to $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/tag/$VERSION"
