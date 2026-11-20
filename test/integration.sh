@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # End-to-end tests for wgwrap. Needs Docker (with buildx) and network access to pull images.
 #
-#   INIT_IMAGE=wgwrap-init:dev WGWRAP=./bin/wgwrap test/integration.sh
+#   INIT_IMAGE=localhost/wgwrap-init:dev WGWRAP=./bin/wgwrap test/integration.sh
 #   ONLY="nginx alpine_userspace" test/integration.sh   # run a subset
 #   KEEP=1 test/integration.sh                           # leave containers for debugging
 #   NGINX_IMAGE=mirror.gcr.io/library/nginx ALPINE_IMAGE=mirror.gcr.io/library/alpine  # dodge Docker Hub rate limits
@@ -13,7 +13,7 @@ set -eu  # no pipefail: `cmd | grep -q` would fail on SIGPIPE
 cd "$(dirname "$0")/.."
 
 WGWRAP=${WGWRAP:-./bin/wgwrap}
-INIT_IMAGE=${INIT_IMAGE:-wgwrap-init:dev}
+INIT_IMAGE=${INIT_IMAGE:-localhost/wgwrap-init:dev}
 P=wgwraptest
 WGNET=10.99.0
 tmp=$(mktemp -d)
@@ -83,6 +83,9 @@ clientconf() { # clientconf name allowedips
 	AllowedIPs = $2
 	PersistentKeepalive = 5
 	EOF
+	# A full tunnel on Docker's resolver needs DNS= (no DNS server there; tests use IPs).
+	[[ $2 != */0* ]] || sed -i "/^Address/a DNS = $WGNET.1" "$tmp/$1.conf"
+	chmod 600 "$tmp/$1.conf" # wgwrap refuses configs the app user could read
 	echo "$tmp/$1.conf"
 }
 
@@ -124,12 +127,12 @@ srv() { docker exec $P-server "$@"; }
 # retry: tunnel traffic right after startup may race the first handshake.
 retry() { for _ in 1 2 3 4 5 6 7 8 9 10; do "$@" && return 0; sleep 1; done; "$@"; }
 status_of() { docker exec "$1" sh -c "grep -E '^($2):' /proc/$3/status" 2>/dev/null; }
-# capbit set? NET_ADMIN is capability 12.
-no_net_admin() { # no_net_admin container pid
+# no_net_admin container pid [mask]: capability bits cleared? NET_ADMIN is 12 (0x1000), NET_RAW 13 (0x2000).
+no_net_admin() {
 	local st; st=$(docker exec "$1" cat /proc/"$2"/status)
-	local eff bnd
+	local eff bnd m=${3:-0x1000}
 	eff=$(awk '/^CapEff/{print $2}' <<<"$st"); bnd=$(awk '/^CapBnd/{print $2}' <<<"$st")
-	(((0x$eff & 0x1000) == 0 && (0x$bnd & 0x1000) == 0)) || { echo "CapEff=$eff CapBnd=$bnd"; return 1; }
+	(((0x$eff & m) == 0 && (0x$bnd & m) == 0)) || { echo "CapEff=$eff CapBnd=$bnd"; return 1; }
 }
 uidline() { docker exec "$1" sh -c "grep -E '^(Uid|Gid|Groups):' /proc/$2/status | tr -s '\t ' ' '"; }
 
@@ -237,6 +240,17 @@ test_errors() {
 		"docker run --rm --label $P -e WG_OPTIONAL=1 -e WGWRAP_USER=1234 $P-alpine-wg id | grep -q 'uid=1234 gid=0'"
 	check "WG_CONFIG_B64 is not visible to the app" sh -c \
 		"docker run --rm --label $P --cap-add NET_ADMIN --network $P-uplink --device /dev/net/tun -e WG_CONFIG_B64=$(base64 -w0 "$tmp/stop.conf") $P-alpine-wg env 2>/dev/null | grep -c WG_CONFIG_B64 | grep -qx 0"
+	cp "$tmp/stop.conf" "$tmp/open.conf"
+	chmod 644 "$tmp/open.conf"
+	out=$(docker run --rm --label $P --network $P-uplink --cap-add NET_ADMIN -e WGWRAP_USER=2000 \
+		-v "$tmp/open.conf:/etc/wireguard/wg0.conf:ro" $P-alpine-wg true 2>&1) && bad "app-readable config should fail"
+	check "config readable by the app user is refused" grep -q "readable by the app user 2000" <<<"$out"
+	out=$(docker run --rm --label $P --network $P-uplink --cap-drop ALL --cap-add NET_ADMIN \
+		-e WG_CONFIG_B64="$(base64 -w0 "$tmp/stop.conf")" $P-alpine-wg true 2>&1) && bad "unable to drop NET_ADMIN should fail"
+	check "can't drop NET_ADMIN (no SETPCAP): refuses to start" grep -q "drop CAP_NET_ADMIN" <<<"$out"
+	check "--cap-drop ALL without a tunnel still runs" docker run --rm --label $P --cap-drop ALL -e WG_OPTIONAL=1 $P-alpine-wg true
+	check "parse errors don't echo the line (it may hold a key)" sh -c \
+		"out=\$(docker run --rm --label $P -e WG_CONFIG_B64=$(printf '[Interface]\nPrivateKey %s\n' "${PRIV[stop]}" | base64 -w0) $P-alpine-wg true 2>&1); echo \"\$out\" | grep -q 'expected key = value' && ! echo \"\$out\" | grep -qiF -- '${PRIV[stop]:0:12}'"
 }
 
 test_full() {
@@ -250,6 +264,27 @@ test_full() {
 		"wget -T 3 -qO- http://$EGRESS_IP:8080/ | grep -q 'remote=${IP[full]} '"
 	check "handshake survives (endpoint traffic bypasses the tunnel)" docker exec $P-full ping -c1 -W2 $WGNET.1
 	check "docker DNS still works (more-specific main routes win)" docker exec $P-full nslookup $P-server 127.0.0.11
+	check "DNS= rewrote resolv.conf" docker exec $P-full grep -qx "nameserver $WGNET.1" /etc/resolv.conf
+	check "app has neither NET_ADMIN nor NET_RAW" no_net_admin $P-full 1 0x3000
+
+	# Kill switch: a socket bound to eth0 (SO_BINDTODEVICE, no privileges needed) must not get out.
+	# The target must be off-host: for a socket bound to a device the kernel falls back to ARPing the
+	# destination on eth0, and the Docker host answers that for its own addresses (see README).
+	# The control step needs internet access to prove the test can see a leak at all.
+	local host_ip=1.1.1.1
+	check "kill switch: ping bound to eth0 is refused" docker exec -u 2000 $P-full sh -c "! ping -c1 -W2 -I eth0 $host_ip"
+	docker exec $P-full ip rule del pref 32002
+	check "  control: without the kill-switch rule it leaks" docker exec -u 2000 $P-full ping -c1 -W2 -I eth0 "$host_ip"
+	docker rm -f $P-full >/dev/null
+
+	local full=(docker run --rm --label $P --network $P-uplink --cap-add NET_ADMIN --sysctl net.ipv4.conf.all.src_valid_mark=1 -e WG_LOG=quiet)
+	check "root app without NET_RAW can still ping through the tunnel" retry "${full[@]}" -v "$tmp/full.conf:/etc/wireguard/wg0.conf:ro" $P-alpine-wg ping -c1 -W3 $WGNET.1
+	sed '/^DNS/d' "$tmp/full.conf" >"$tmp/full-nodns.conf"
+	chmod 600 "$tmp/full-nodns.conf"
+	local out
+	out=$("${full[@]}" -v "$tmp/full-nodns.conf:/etc/wireguard/wg0.conf:ro" $P-alpine-wg true 2>&1) && bad "full tunnel without DNS= should fail"
+	check "full tunnel without DNS= on Docker's resolver is refused" grep -q WG_ALLOW_DNS_LEAK <<<"$out"
+	check "  ... unless WG_ALLOW_DNS_LEAK=1" "${full[@]}" -e WG_ALLOW_DNS_LEAK=1 -v "$tmp/full-nodns.conf:/etc/wireguard/wg0.conf:ro" $P-alpine-wg true
 }
 
 test_ipv6() {
@@ -285,7 +320,7 @@ test_tty() {
 		-e WG_LOG=quiet -v "$(clientconf tty $WGNET.0/24):/etc/wireguard/wg0.conf:ro")
 	check "docker run -t passes the TTY through (userspace supervisor)" sh -c "$(printf '%q ' "${base[@]}") $P-alpine-wg tty | grep -q '^/dev/pts/'"
 	check "... also for a non-root WGWRAP_USER, including /dev/stderr" sh -c \
-		"$(printf '%q ' "${base[@]}") -e WGWRAP_USER=1000 $P-alpine-wg sh -c 'tty && echo err-ok >/dev/stderr' | tr -d '\r' | grep -qx err-ok"
+		"$(printf '%q ' "${base[@]}") -e WGWRAP_USER=2000 $P-alpine-wg sh -c 'tty && echo err-ok >/dev/stderr' | tr -d '\r' | grep -qx err-ok"
 }
 
 test_baked() {

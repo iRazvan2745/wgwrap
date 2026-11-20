@@ -123,9 +123,19 @@ func main() {
 			"Don't use --user (or compose 'user:'); pass the user as -e WGWRAP_USER=%d instead, and wgwrap switches to it after setup.", os.Geteuid(), os.Geteuid())
 	}
 
+	cred, err := privdrop.Resolve(os.Getenv("WGWRAP_USER"), "/")
+	if err != nil {
+		die("WGWRAP_USER=%q: %v", os.Getenv("WGWRAP_USER"), err)
+	}
+	dropCaps := os.Getenv("WG_DROP_CAPS") != "0"
+
 	cfg, src, err := loadConfig()
 	if err != nil {
 		die("config %s: %v", src, err)
+	}
+	// A root app can always read the config; for others, refuse to hand them the private key.
+	if cfg != nil && src != "WG_CONFIG_B64" && cred.UID != 0 && privdrop.CanRead(src, cred) {
+		die("%s (with the private key) is readable by the app user %d. Make it chmod 600 and owned by another uid, or pass it as WG_CONFIG_B64", src, cred.UID)
 	}
 	var tunnel *netsetup.Tunnel
 	switch {
@@ -146,6 +156,7 @@ func main() {
 			Mode:           mode,
 			ResolveTimeout: envDuration("WG_RESOLVE_TIMEOUT", 30*time.Second),
 			Debug:          logLevel == 2,
+			AllowDNSLeak:   os.Getenv("WG_ALLOW_DNS_LEAK") == "1",
 		})
 		if err != nil {
 			die("%v", err)
@@ -163,14 +174,16 @@ func main() {
 		}
 	}
 
-	cred, err := privdrop.Resolve(os.Getenv("WGWRAP_USER"), "/")
-	if err != nil {
-		die("WGWRAP_USER=%q: %v", os.Getenv("WGWRAP_USER"), err)
-	}
-	if os.Getenv("WG_DROP_CAPS") != "0" {
-		// NET_RAW is left alone: wgwrap never gains it, so it is exactly as the user configured.
+	if dropCaps {
+		// Fail closed: without this the app could reconfigure or bypass the tunnel.
 		if err := privdrop.DropCap(unix.CAP_NET_ADMIN); err != nil {
-			logAt(0, "warning: ", "couldn't drop CAP_NET_ADMIN, the app could reconfigure the tunnel: %v", err)
+			die("drop CAP_NET_ADMIN: %v; keep CAP_SETPCAP (Docker default) or set WG_DROP_CAPS=0", err)
+		}
+		// Full tunnel: raw packet sockets could send frames out of eth0, past the routing kill switch.
+		if tunnel != nil && tunnel.FullTunnel {
+			if err := privdrop.DropCap(unix.CAP_NET_RAW); err != nil {
+				die("drop CAP_NET_RAW: %v; set WG_DROP_CAPS=0 to skip", err)
+			}
 		}
 	}
 	if !cred.IsRoot() {

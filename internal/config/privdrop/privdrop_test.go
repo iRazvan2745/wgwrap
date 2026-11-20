@@ -1,6 +1,8 @@
 package privdrop
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -46,6 +48,35 @@ func TestResolveErrors(t *testing.T) {
 	} {
 		if _, err := Resolve(spec, "testdata"); err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("Resolve(%q) err = %v, want %q", spec, err, want)
+		}
+	}
+}
+
+func TestCanRead(t *testing.T) {
+	f := filepath.Join(t.TempDir(), "wg0.conf")
+	if err := os.WriteFile(f, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	me, myGid := uint32(os.Getuid()), uint32(os.Getgid())
+	other := me + 4242
+	cases := []struct {
+		mode os.FileMode
+		cred Cred
+		want bool
+	}{
+		{0o600, Cred{UID: other, GID: other}, false},
+		{0o644, Cred{UID: other, GID: other}, true},
+		{0o640, Cred{UID: other, GID: other}, false},
+		{0o640, Cred{UID: other, GID: other, Groups: []uint32{myGid}}, true},
+		{0o600, Cred{UID: me, GID: other}, true}, // the owner
+		{0o000, Cred{UID: 0}, true},              // root reads anything
+	}
+	for _, c := range cases {
+		if err := os.Chmod(f, c.mode); err != nil {
+			t.Fatal(err)
+		}
+		if got := CanRead(f, &c.cred); got != c.want {
+			t.Errorf("mode %o cred %+v: got %v, want %v", c.mode, c.cred, got, c.want)
 		}
 	}
 }

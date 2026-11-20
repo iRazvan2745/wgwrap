@@ -95,6 +95,8 @@ func TestParseErrors(t *testing.T) {
 		{head + "MTU = big\n", "line 3: MTU"},
 		{head + "Bogus = 1\n", `line 3: unknown [Interface] key "bogus"`},
 		{head + "just text\n", "line 3: expected key = value"},
+		{head + "PrivateKey " + k2 + "\n", "line 3: expected key = value"},
+		{head + "PrivateKey " + strings.TrimRight(k2, "=") + "\n", "line 3: expected key = value"},
 		{head + "[Server]\n", "line 3: unknown section"},
 		{"Address = 10.0.0.1/24\n", "line 1: address outside of a section"},
 		{head + "[Peer]\nAllowedIPs = 10.0.0.0/33\n", "line 4: AllowedIPs"},
@@ -109,6 +111,9 @@ func TestParseErrors(t *testing.T) {
 		_, err := Parse(strings.NewReader(tc.in))
 		if err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("Parse(%q) err = %v, want %q", tc.in, err, tc.want)
+		}
+		if err != nil && (strings.Contains(strings.ToLower(err.Error()), strings.ToLower(k1[:20])) || strings.Contains(strings.ToLower(err.Error()), strings.ToLower(k2[:20]))) {
+			t.Errorf("Parse(%q) error leaks a key: %v", tc.in, err)
 		}
 	}
 }

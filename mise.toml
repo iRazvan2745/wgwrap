@@ -1,10 +1,12 @@
 # Tasks: mise run build|test|lint|image|image-multiarch|integration
 # Override with env vars, e.g. INIT_IMAGE=ghcr.io/you/wgwrap-init mise run build
+[tools]
+go = "1.26.11" # GO-2026-6859 fix; keep in step with GO_IMAGE in the Dockerfile
+
 [env]
 CGO_ENABLED = "0"
-INIT_IMAGE = "{{ get_env(name='INIT_IMAGE', default='wgwrap-init') }}"
+INIT_IMAGE = "{{ get_env(name='INIT_IMAGE', default='localhost/wgwrap-init') }}"
 PLATFORMS = "{{ get_env(name='PLATFORMS', default='linux/amd64,linux/arm64,linux/arm/v7') }}"
-GO_IMAGE = "{{ get_env(name='GO_IMAGE', default='golang:1.26-alpine') }}"
 VERSION = "{{ get_env(name='VERSION', default=exec(command='git describe --tags --always --dirty 2>/dev/null || echo dev')) }}"
 
 [tasks.build]
@@ -29,11 +31,11 @@ if command -v staticcheck >/dev/null; then staticcheck ./...; else echo "staticc
 
 [tasks.image]
 description = "Local single-platform wgwrap-init image, loaded into the docker image store"
-run = "docker buildx build --build-arg VERSION=$VERSION --build-arg GO_IMAGE=$GO_IMAGE -t $INIT_IMAGE:$VERSION --load ."
+run = "docker buildx build --build-arg VERSION=$VERSION ${GO_IMAGE:+--build-arg GO_IMAGE=$GO_IMAGE} -t $INIT_IMAGE:$VERSION --load ."
 
 [tasks.image-multiarch]
 description = "Multi-arch wgwrap-init image, pushed (INIT_IMAGE=ghcr.io/you/wgwrap-init)"
-run = "docker buildx build --platform $PLATFORMS --build-arg VERSION=$VERSION --build-arg GO_IMAGE=$GO_IMAGE -t $INIT_IMAGE:$VERSION --push ."
+run = "docker buildx build --platform $PLATFORMS --build-arg VERSION=$VERSION ${GO_IMAGE:+--build-arg GO_IMAGE=$GO_IMAGE} -t $INIT_IMAGE:$VERSION --push ."
 
 [tasks.integration]
 description = "Docker end-to-end tests"

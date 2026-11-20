@@ -16,7 +16,7 @@ import (
 
 var (
 	version          = "dev"
-	defaultInitImage = "wgwrap-init" // set at release time via -ldflags
+	defaultInitImage = "localhost/wgwrap-init" // "localhost/" never resolves to Docker Hub; set the real one via -ldflags
 )
 
 const usage = `usage:

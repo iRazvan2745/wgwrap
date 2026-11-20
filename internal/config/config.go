@@ -94,10 +94,11 @@ func Parse(r io.Reader) (*Config, error) {
 			continue
 		}
 		k, v, ok := strings.Cut(line, "=")
-		if !ok {
-			return nil, lineErr(n, "expected key = value, got %q", line)
-		}
 		k, v = strings.ToLower(strings.TrimSpace(k)), strings.TrimSpace(v)
+		// Never echo the line: a typo like "PrivateKey abc..." would put the key in the logs.
+		if !ok || strings.Trim(k, "abcdefghijklmnopqrstuvwxyz") != "" {
+			return nil, lineErr(n, "expected key = value (line not shown, it may contain a key)")
+		}
 		var err error
 		switch section {
 		case "interface":

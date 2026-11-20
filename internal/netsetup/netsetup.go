@@ -34,18 +34,26 @@ type Options struct {
 	Mode           string // auto, kernel, userspace
 	ResolveTimeout time.Duration
 	Debug          bool
+	AllowDNSLeak   bool // full tunnel may keep using Docker's host-side resolver
 }
 
 // Tunnel is the result of Up. Userspace is nil in kernel mode.
 type Tunnel struct {
-	Iface     string
-	Mode      string
-	Userspace *userspace.Device
+	Iface      string
+	Mode       string
+	Userspace  *userspace.Device
+	FullTunnel bool // policy routing sends all egress into the tunnel
 }
 
 // Up creates the interface, configures keys/peers, addresses, routes, rules and DNS.
 func Up(c *config.Config, o Options) (*Tunnel, error) {
 	t := &Tunnel{Iface: o.Iface}
+	if _, full := routingPlan(c, true); len(full) > 0 && len(c.DNS) == 0 && !o.AllowDNSLeak {
+		if ns := loopbackNameserver("/etc/resolv.conf"); ns != "" {
+			return nil, fmt.Errorf("full tunnel without DNS=: queries to Docker's resolver %s are forwarded by the host, outside the tunnel. "+
+				"Set DNS = <resolver reachable through the tunnel> in [Interface], or WG_ALLOW_DNS_LEAK=1 to accept this", ns)
+		}
+	}
 	if err := t.create(c, o); err != nil {
 		return nil, err
 	}
@@ -95,6 +103,7 @@ func Up(c *config.Config, o Options) (*Tunnel, error) {
 	if err != nil {
 		return nil, err
 	}
+	t.FullTunnel = len(full) > 0
 	setDNS(c.DNS)
 
 	addrs := make([]string, len(c.Addresses))
@@ -294,6 +303,7 @@ func addRoutes(c *config.Config, idx, mark int, full map[int]bool, v6 bool) ([]s
 	// Full tunnel, the same policy routing wg-quick uses:
 	//   pref 32000: table main suppress_prefixlength 0  (use main for anything more specific than default)
 	//   pref 32001: not fwmark M -> table M             (everything else, except WireGuard's own packets)
+	//   pref 32002: not fwmark M -> prohibit            (kill switch, see below)
 	for fam := range full {
 		const svm = "/proc/sys/net/ipv4/conf/all/src_valid_mark"
 		if b, _ := os.ReadFile(svm); fam == netlink.FAMILY_V4 && strings.TrimSpace(string(b)) != "1" {
@@ -306,7 +316,11 @@ func addRoutes(c *config.Config, idx, mark int, full map[int]bool, v6 bool) ([]s
 		suppress.Family, suppress.Table, suppress.SuppressPrefixlen, suppress.Priority = fam, unix.RT_TABLE_MAIN, 0, 32000
 		notMark := netlink.NewRule()
 		notMark.Family, notMark.Table, notMark.Mark, notMark.Invert, notMark.Priority = fam, mark, uint32(mark), true, 32001
-		for _, r := range []*netlink.Rule{suppress, notMark} {
+		// Kill switch: unmarked traffic that table M can't route (e.g. a socket bound to eth0 with
+		// SO_BINDTODEVICE, or wg0 gone) is refused instead of falling through to main's default route.
+		kill := netlink.NewRule()
+		kill.Family, kill.Mark, kill.Invert, kill.Priority, kill.Type = fam, uint32(mark), true, 32002, unix.RTN_PROHIBIT
+		for _, r := range []*netlink.Rule{suppress, notMark, kill} {
 			if err := netlink.RuleAdd(r); err != nil && !errors.Is(err, unix.EEXIST) {
 				return nil, fmt.Errorf("add ip rule: %w", hint(err))
 			}
@@ -364,4 +378,19 @@ func WaitHandshake(iface string, timeout time.Duration) error {
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
+}
+
+// loopbackNameserver returns the first 127.x nameserver in resolv.conf (Docker's embedded
+// resolver, which forwards from the host's namespace), or "".
+func loopbackNameserver(path string) string {
+	b, _ := os.ReadFile(path)
+	for _, line := range strings.Split(string(b), "\n") {
+		f := strings.Fields(line)
+		if len(f) >= 2 && f[0] == "nameserver" {
+			if ip, err := netip.ParseAddr(f[1]); err == nil && ip.IsLoopback() {
+				return f[1]
+			}
+		}
+	}
+	return ""
 }

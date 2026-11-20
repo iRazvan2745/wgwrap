@@ -148,6 +148,9 @@ func Apply(c *Cred) error {
 // all capabilities at setuid anyway. The effective/permitted sets are left alone so the
 // supervisor in userspace mode can keep running wireguard-go.
 func DropCap(cap uintptr) error {
+	if r, _ := unix.PrctlRetInt(unix.PR_CAPBSET_READ, cap, 0, 0, 0); r == 0 {
+		return nil // never held (e.g. --cap-drop ALL), nothing the app could use
+	}
 	// Requires CGO_ENABLED=0 (AllThreadsSyscall refuses to run with cgo).
 	if _, _, e := syscall.AllThreadsSyscall(unix.SYS_PRCTL, unix.PR_CAPBSET_DROP, cap, 0); e != 0 {
 		return fmt.Errorf("drop from bounding set: %w (missing CAP_SETPCAP?)", e)
@@ -177,4 +180,22 @@ func FixStdio(uid uint32) {
 		}
 		_ = unix.Fchown(fd, int(uid), -1) // best effort, as in runc
 	}
+}
+
+// CanRead reports whether c could read path, judged by its mode bits.
+// shortcut: ignores ACLs and parent directory permissions (errs towards "readable"), fine for a mounted config file.
+func CanRead(path string, c *Cred) bool {
+	var st unix.Stat_t
+	if unix.Stat(path, &st) != nil {
+		return false
+	}
+	switch {
+	case c.UID == 0:
+		return true
+	case st.Uid == c.UID:
+		return st.Mode&0o400 != 0
+	case st.Gid == c.GID || slices.Contains(c.Groups, st.Gid):
+		return st.Mode&0o040 != 0
+	}
+	return st.Mode&0o004 != 0
 }
