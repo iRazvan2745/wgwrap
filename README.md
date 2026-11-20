@@ -130,7 +130,8 @@ docker run --cap-add NET_ADMIN --device /dev/net/tun \
   -e WG_MODE=userspace -e WG_CONFIG_B64="$(base64 -w0 wg0-full.conf)" alpine-wg wget -qO- ifconfig.me
 ```
 
-Compose: see [examples/compose.yaml](examples/compose.yaml), [examples/wg0.conf](examples/wg0.conf)
+Compose: see [examples/compose.yaml](examples/compose.yaml) (a wrapped service, userspace full tunnel,
+and a sidecar where stock images share one tunnel via `network_mode: service:vpn`), [examples/wg0.conf](examples/wg0.conf)
 (split tunnel) and [examples/wg0-full.conf](examples/wg0-full.conf) (full tunnel).
 
 ## The `wgwrap` CLI
