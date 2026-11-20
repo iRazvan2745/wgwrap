@@ -23,7 +23,9 @@ func ExitCode(ws unix.WaitStatus) int {
 // Supervise runs the app as a child of this process (which is PID 1), forwards signals,
 // reaps orphaned zombies and returns the app's exit code. If devDone closes first, the app
 // is sent SIGTERM, then SIGKILL after grace, and a non-zero code is returned.
-func Supervise(path string, argv, env []string, cred *syscall.Credential, devDone <-chan struct{}, grace time.Duration, logf func(string, ...any)) int {
+// Every other process it reaps is passed to reaped (if non-nil), so other goroutines can learn
+// the exit status of children they started; it also reaps children that exited before it ran.
+func Supervise(path string, argv, env []string, cred *syscall.Credential, devDone <-chan struct{}, grace time.Duration, logf func(string, ...any), reaped func(pid int, ws unix.WaitStatus)) int {
 	sigs := make(chan os.Signal, 32)
 	signal.Notify(sigs, append([]os.Signal{unix.SIGCHLD}, forwarded...)...)
 	defer signal.Stop(sigs)
@@ -42,8 +44,33 @@ func Supervise(path string, argv, env []string, cred *syscall.Credential, devDon
 	}
 	pid := p.Pid
 
-	var killTimer <-chan time.Time
 	tunnelDied := false
+	// reapAll reaps every zombie (we're PID 1, so not just our direct child) and reports
+	// whether the app was among them.
+	reapAll := func() (int, bool) {
+		for {
+			var ws unix.WaitStatus
+			wpid, err := unix.Wait4(-1, &ws, unix.WNOHANG, nil)
+			if wpid <= 0 || err != nil {
+				return 0, false
+			}
+			if wpid == pid {
+				if tunnelDied {
+					return 1, true
+				}
+				return ExitCode(ws), true
+			}
+			if reaped != nil {
+				reaped(wpid, ws)
+			}
+		}
+	}
+	// Children that exited before Notify sent no SIGCHLD to sigs.
+	if code, done := reapAll(); done {
+		return code
+	}
+
+	var killTimer <-chan time.Time
 	for {
 		select {
 		case s := <-sigs:
@@ -51,19 +78,8 @@ func Supervise(path string, argv, env []string, cred *syscall.Credential, devDon
 				_ = unix.Kill(pid, s.(unix.Signal))
 				continue
 			}
-			// We're PID 1: reap everything, not just our direct child.
-			for {
-				var ws unix.WaitStatus
-				wpid, err := unix.Wait4(-1, &ws, unix.WNOHANG, nil)
-				if wpid <= 0 || err != nil {
-					break
-				}
-				if wpid == pid {
-					if tunnelDied {
-						return 1
-					}
-					return ExitCode(ws)
-				}
+			if code, done := reapAll(); done {
+				return code
 			}
 		case <-devDone:
 			devDone = nil

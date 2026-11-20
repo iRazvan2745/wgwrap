@@ -26,23 +26,3 @@ services:
       WG_MODE: userspace
     volumes:
       - ./wg0-full.conf:/etc/wireguard/wg0.conf:ro
-
-  # Sidecar: one wrapped container holds the tunnel, unwrapped images join its
-  # network namespace and get the same wg0, routes, kill switch and DNS.
-  vpn:
-    image: alpine-wg
-    command: ["sleep", "infinity"]
-    cap_add: [NET_ADMIN]
-    volumes:
-      - ./wg0.conf:/etc/wireguard/wg0.conf:ro
-    # sleep only runs once the tunnel is fully set up, so this gates the sidecars.
-    healthcheck:
-      test: ["CMD", "pidof", "sleep"]
-      interval: 2s
-      start_period: 30s
-  redis:
-    image: redis:alpine     # stock image, no wgwrap needed; no cap_add either
-    network_mode: service:vpn
-    depends_on:
-      vpn: { condition: service_healthy, restart: true }
-  # Ports of sidecars are published on the vpn service, not on the sidecar.

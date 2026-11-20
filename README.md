@@ -13,11 +13,7 @@ mise run build && mise run image   # bin/wgwrap + the localhost/wgwrap-init:<ver
 docker run --cap-add NET_ADMIN -v ./wg0.conf:/etc/wireguard/wg0.conf:ro nginx-wg
 ```
 
-## Releases
-
-- It pushes the multi-arch init image to `pkg.bar/wgwrap-init:<tag>` (and `:latest`).
-- It attaches `wgwrap` CLI binaries (linux and darwin, amd64 and arm64) to a Forgejo release.
-- Those binaries default to that init image, so `--init-image` isn't needed.
+check the examples
 
 ## How it works
 
@@ -45,7 +41,8 @@ or libc. At startup it:
    tunnel also `CAP_NET_RAW`, see below). It refuses to start if that user could read the config file.
 4. Hands off to the original entrypoint:
    - **Kernel mode** (`wireguard` module on the host): `exec`. The app becomes PID 1 and the
-     kernel keeps `wg0` alive. No process is left behind.
+     kernel keeps `wg0` alive. No process is left behind (unless `WG_NATPMP_GATEWAY` is set, which
+     keeps wgwrap running as PID 1 like userspace mode).
    - **Userspace mode** (no module; wireguard-go on `/dev/net/tun`): the tunnel lives _in_ the
      wgwrap process, so it can't exec. It stays as a minimal PID 1. It starts the app as a child,
      forwards signals, reaps zombies and exits with the app's exit code (128+N if killed by signal N).
@@ -76,6 +73,8 @@ or libc. At startup it:
 | `WG_STOP_GRACE`            | `10s`                     | Userspace mode: time between SIGTERM and SIGKILL when the tunnel dies.                             |
 | `WG_DROP_CAPS`             | `1`                       | `0`: let the app keep `CAP_NET_ADMIN` and `CAP_NET_RAW`.                                           |
 | `WG_ALLOW_DNS_LEAK`        |                           | `1`: allow a full tunnel without `DNS =` on a network using Docker's resolver (see below).         |
+| `WG_NATPMP_GATEWAY`        |                           | e.g. `10.2.0.1`: keep a NAT-PMP port forward alive on this gateway (see below).                    |
+| `WG_NATPMP_CMD`            |                           | Shell command run as the app user when the forwarded port changes, with it in `$WG_NATPMP_PORT`.   |
 | `WG_LOG`                   | `info`                    | `debug`, `info` or `quiet`. Keys are never logged.                                                 |
 | `WGWRAP_USER`              | image's `USER`            | The user the app runs as: `name`, `uid`, `name:group`, `uid:gid`. Set by `wgwrap build`.           |
 
@@ -113,6 +112,48 @@ refuses to start without `DNS =` unless `WG_ALLOW_DNS_LEAK=1`.
 With `Table = N`, every route goes in table N and no rules are added. `Table = off` adds no routes.
 `DNS` rewrites `/etc/resolv.conf`: IPs become `nameserver` lines, anything else becomes `search`.
 
+## Port forwarding (NAT-PMP)
+
+Some VPNs forward one random port to you while you keep renewing it (Proton VPN: enable NAT-PMP when
+creating the config, gateway `10.2.0.1`). Set the gateway and wgwrap keeps the port open and logs it:
+
+```bash
+docker run --cap-add NET_ADMIN --sysctl net.ipv4.conf.all.src_valid_mark=1 \
+  -v ./proton.conf:/etc/wireguard/wg0.conf:ro -e WG_NATPMP_GATEWAY=10.2.0.1 alpine-wg sleep infinity
+# wgwrap: NAT-PMP: public port 51234 via 10.2.0.1
+```
+
+Traffic to that port arrives on the same port in the container, so the app must listen on it. The
+port can change, so tell the app with `WG_NATPMP_CMD`. It runs in `/bin/sh` as the app user whenever
+the port changes, with the port in `$WG_NATPMP_PORT`. If it fails, it's retried 5s later, which also
+covers an app that is still starting.
+
+Write the port to a file:
+
+```bash
+-e WG_NATPMP_CMD='echo $WG_NATPMP_PORT > /tmp/port'
+```
+
+qBittorrent (turn on _Bypass authentication for clients on localhost_). In compose, write `$$` for `$`:
+
+```yaml
+services:
+  qbittorrent:
+    image: qbittorrent-wg # wgwrap build qbittorrentofficial/qbittorrent-nox -t qbittorrent-wg
+    cap_add: [NET_ADMIN]
+    sysctls:
+      net.ipv4.conf.all.src_valid_mark: 1
+    volumes:
+      - ./proton.conf:/etc/wireguard/wg0.conf:ro
+    environment:
+      WG_NATPMP_GATEWAY: 10.2.0.1
+      WG_NATPMP_CMD: >-
+        wget -qO- --post-data "json={\"listen_port\":$$WG_NATPMP_PORT}"
+        http://127.0.0.1:8080/api/v2/app/setPreferences
+```
+
+wgwrap stays running as PID 1 to renew the port, even in kernel mode.
+
 ## Examples
 
 Plain Docker, with the config mounted, in kernel mode:
@@ -130,8 +171,7 @@ docker run --cap-add NET_ADMIN --device /dev/net/tun \
   -e WG_MODE=userspace -e WG_CONFIG_B64="$(base64 -w0 wg0-full.conf)" alpine-wg wget -qO- ifconfig.me
 ```
 
-Compose: see [examples/compose.yaml](examples/compose.yaml) (a wrapped service, userspace full tunnel,
-and a sidecar where stock images share one tunnel via `network_mode: service:vpn`), [examples/wg0.conf](examples/wg0.conf)
+Compose: see [examples/compose.yaml](examples/compose.yaml) (a wrapped service and a userspace full tunnel), [examples/wg0.conf](examples/wg0.conf)
 (split tunnel) and [examples/wg0-full.conf](examples/wg0-full.conf) (full tunnel).
 
 ## The `wgwrap` CLI

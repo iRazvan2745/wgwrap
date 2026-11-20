@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net/netip"
 	"os"
 	"os/exec"
 	"strings"
@@ -195,9 +196,19 @@ func main() {
 		die("%v", err)
 	}
 
+	if gw := os.Getenv("WG_NATPMP_GATEWAY"); gw != "" && tunnel != nil {
+		addr, err := netip.ParseAddr(gw)
+		if err != nil {
+			die("WG_NATPMP_GATEWAY=%q is not an IP address", gw)
+		}
+		// The renew loop must outlive setup, so stay alive as a minimal init even in kernel mode.
+		kids := &children{waiting: map[int]chan unix.WaitStatus{}}
+		go natpmpLoop(addr, os.Getenv("WG_NATPMP_CMD"), kids, env, cred.Syscall())
+		os.Exit(supervise(bin, args, env, cred, tunnel, kids.reaped))
+	}
 	if tunnel != nil && tunnel.Userspace != nil {
 		// The tunnel lives in this process, so stay alive as a minimal init.
-		os.Exit(supervise(bin, args, env, cred, tunnel))
+		os.Exit(supervise(bin, args, env, cred, tunnel, nil))
 	}
 	if !cred.IsRoot() {
 		if err := privdrop.Apply(cred); err != nil {
