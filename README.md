@@ -1,6 +1,6 @@
 # wgwrap
 
-Allows you to use WireGuard on any container.
+TLDR: Allows you to use WireGuard on any container.
 
 `wgwrap` takes any existing image (debian, alpine, distroless, scratch…) and builds a derived image
 that brings up its own `wg0` interface at startup, from a standard wg-quick config, then runs the
@@ -13,13 +13,7 @@ mise run build && mise run image   # bin/wgwrap + the localhost/wgwrap-init:<ver
 docker run --cap-add NET_ADMIN -v ./wg0.conf:/etc/wireguard/wg0.conf:ro nginx-wg
 ```
 
-## Source, mirror and releases
-
-The source of truth is [git.irazz.lol/irazz/wgwrap](https://git.irazz.lol/irazz/wgwrap). Open issues and
-pull requests there. [github.com/iRazvan2745/wgwrap](https://github.com/iRazvan2745/wgwrap) is a
-read-only push mirror.
-
-Pushing a `v*` tag runs `.forgejo/workflows/release.yml`:
+## Releases
 
 - It pushes the multi-arch init image to `git.irazz.lol/irazz/wgwrap-init:<tag>` (and `:latest`).
 - It attaches `wgwrap` CLI binaries (linux and darwin, amd64 and arm64) to a Forgejo release.
@@ -80,8 +74,8 @@ or libc. At startup it:
 | `WG_WAIT_HANDSHAKE`        |                           | e.g. `10s`: wait until a peer handshakes before starting the app.                                  |
 | `WG_WAIT_HANDSHAKE_STRICT` |                           | `1`: fail instead of warning when that wait times out.                                             |
 | `WG_STOP_GRACE`            | `10s`                     | Userspace mode: time between SIGTERM and SIGKILL when the tunnel dies.                             |
-| `WG_DROP_CAPS`             | `1`                       | `0`: let the app keep `CAP_NET_ADMIN` and `CAP_NET_RAW`.                                                             |
-| `WG_ALLOW_DNS_LEAK` |  | `1`: allow a full tunnel without `DNS =` on a network using Docker's resolver (see below). |
+| `WG_DROP_CAPS`             | `1`                       | `0`: let the app keep `CAP_NET_ADMIN` and `CAP_NET_RAW`.                                           |
+| `WG_ALLOW_DNS_LEAK`        |                           | `1`: allow a full tunnel without `DNS =` on a network using Docker's resolver (see below).         |
 | `WG_LOG`                   | `info`                    | `debug`, `info` or `quiet`. Keys are never logged.                                                 |
 | `WGWRAP_USER`              | image's `USER`            | The user the app runs as: `name`, `uid`, `name:group`, `uid:gid`. Set by `wgwrap build`.           |
 
