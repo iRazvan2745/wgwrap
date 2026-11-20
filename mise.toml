@@ -1,5 +1,5 @@
 # Tasks: mise run build|test|lint|image|image-multiarch|integration
-# Override with env vars, e.g. INIT_IMAGE=ghcr.io/you/wgwrap-init mise run build
+# Override with env vars, e.g. INIT_IMAGE=pkg.bar/wgwrap-init mise run build
 [tools]
 go = "1.26.11" # GO-2026-6859 fix; keep in step with GO_IMAGE in the Dockerfile
 
@@ -34,7 +34,7 @@ description = "Local single-platform wgwrap-init image, loaded into the docker i
 run = "docker buildx build --build-arg VERSION=$VERSION ${GO_IMAGE:+--build-arg GO_IMAGE=$GO_IMAGE} -t $INIT_IMAGE:$VERSION --load ."
 
 [tasks.image-multiarch]
-description = "Multi-arch wgwrap-init image, pushed (INIT_IMAGE=ghcr.io/you/wgwrap-init)"
+description = "Multi-arch wgwrap-init image, pushed (INIT_IMAGE=pkg.bar/wgwrap-init)"
 run = "docker buildx build --platform $PLATFORMS --build-arg VERSION=$VERSION ${GO_IMAGE:+--build-arg GO_IMAGE=$GO_IMAGE} -t $INIT_IMAGE:$VERSION --push ."
 
 [tasks.integration]

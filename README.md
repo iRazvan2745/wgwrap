@@ -15,7 +15,7 @@ docker run --cap-add NET_ADMIN -v ./wg0.conf:/etc/wireguard/wg0.conf:ro nginx-wg
 
 ## Releases
 
-- It pushes the multi-arch init image to `git.irazz.lol/irazz/wgwrap-init:<tag>` (and `:latest`).
+- It pushes the multi-arch init image to `pkg.bar/wgwrap-init:<tag>` (and `:latest`).
 - It attaches `wgwrap` CLI binaries (linux and darwin, amd64 and arm64) to a Forgejo release.
 - Those binaries default to that init image, so `--init-image` isn't needed.
 
@@ -153,8 +153,8 @@ wgwrap version
 - `--optional` sets `WG_OPTIONAL=1`, so the image also runs without a config.
 - `--init-image` defaults to `localhost/wgwrap-init:<version>`. The `localhost/` prefix means it is
   never pulled from Docker Hub by accident. Build it with `mise run image`, or publish it
-  multi-arch (amd64, arm64, arm/v7) with `INIT_IMAGE=ghcr.io/you/wgwrap-init mise run image-multiarch`.
-  Bake that name in with `INIT_IMAGE=ghcr.io/you/wgwrap-init mise run build`.
+  multi-arch (amd64, arm64, arm/v7) with `INIT_IMAGE=pkg.bar/wgwrap-init mise run image-multiarch`.
+  Bake that name in with `INIT_IMAGE=pkg.bar/wgwrap-init mise run build`.
 - With `--platform`, the init image must have those platforms too: use `mise run image-multiarch`, or
   `docker buildx build --platform ... --load .` on the containerd image store.
 
