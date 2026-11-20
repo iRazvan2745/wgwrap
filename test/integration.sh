@@ -236,6 +236,7 @@ test_stop() {
 }
 
 test_errors() {
+	clientconf stop $WGNET.0/24 >/dev/null # also needed when ONLY skips test_stop
 	local out
 	out=$(docker run --rm --label $P --network $P-uplink $(mnt "$tmp/stop.conf") $P-alpine-wg true 2>&1) && bad "no NET_ADMIN should fail"
 	check "missing NET_ADMIN explains the fix" grep -q -- "--cap-add NET_ADMIN" <<<"$out"
@@ -255,7 +256,7 @@ test_errors() {
 	out=$(docker run --rm --label $P --network $P-uplink --cap-add NET_ADMIN -e WGWRAP_USER=2000 \
 		$(mnt "$tmp/open.conf") $P-alpine-wg true 2>&1) && bad "app-readable config should fail"
 	check "config readable by the app user is refused" grep -q "readable by the app user 2000" <<<"$out"
-	out=$(docker run --rm --label $P --network $P-uplink --cap-drop ALL --cap-add NET_ADMIN \
+	out=$(docker run --rm --label $P --network $P-uplink --cap-drop ALL --cap-add NET_ADMIN --device /dev/net/tun \
 		-e WG_CONFIG_B64="$(base64 -w0 "$tmp/stop.conf")" $P-alpine-wg true 2>&1) && bad "unable to drop NET_ADMIN should fail"
 	check "can't drop NET_ADMIN (no SETPCAP): refuses to start" grep -q "drop CAP_NET_ADMIN" <<<"$out"
 	check "--cap-drop ALL without a tunnel still runs" docker run --rm --label $P --cap-drop ALL -e WG_OPTIONAL=1 $P-alpine-wg true
@@ -338,7 +339,7 @@ test_baked() {
 	sed -i "/^Address/a DNS = $WGNET.1, corp.internal" "$tmp/baked.conf"
 	# Building from the already-wrapped alpine also exercises the re-wrap path.
 	check "wrap with --config and --optional" "$WGWRAP" build $P-alpine-wg -t $P-baked --config "$tmp/baked.conf" --optional --init-image "$INIT_IMAGE"
-	run --name $P-baked --network $P-uplink --cap-add NET_ADMIN $P-baked sleep infinity
+	run --name $P-baked --network $P-uplink --cap-add NET_ADMIN --device /dev/net/tun $P-baked sleep infinity
 	check "baked config comes up without a mount" wait_up $P-baked
 	check "server -> baked ping" retry srv ping -c1 -W2 ${IP[baked]}
 	check "DNS= rewrote resolv.conf" docker exec $P-baked sh -c "grep -qx 'nameserver $WGNET.1' /etc/resolv.conf && grep -qx 'search corp.internal' /etc/resolv.conf"
