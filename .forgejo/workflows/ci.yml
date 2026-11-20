@@ -15,7 +15,7 @@ jobs:
     steps:
       - uses: https://data.forgejo.org/actions/checkout@v4
       - uses: https://github.com/jdx/mise-action@v2 # installs the Go version pinned in mise.toml
-      - run: mise run lint ::: test
+      - run: "mise run lint ::: test"
       - name: govulncheck
         run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 
