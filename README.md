@@ -13,6 +13,18 @@ mise run build && mise run image   # bin/wgwrap + the localhost/wgwrap-init:<ver
 docker run --cap-add NET_ADMIN -v ./wg0.conf:/etc/wireguard/wg0.conf:ro nginx-wg
 ```
 
+## Source, mirror and releases
+
+The source of truth is [git.irazz.lol/irazz/wgwrap](https://git.irazz.lol/irazz/wgwrap). Open issues and
+pull requests there. [github.com/iRazvan2745/wgwrap](https://github.com/iRazvan2745/wgwrap) is a
+read-only push mirror.
+
+Pushing a `v*` tag runs `.forgejo/workflows/release.yml`:
+
+- It pushes the multi-arch init image to `git.irazz.lol/irazz/wgwrap-init:<tag>` (and `:latest`).
+- It attaches `wgwrap` CLI binaries (linux and darwin, amd64 and arm64) to a Forgejo release.
+- Those binaries default to that init image, so `--init-image` isn't needed.
+
 ## How it works
 
 Every container has its own network namespace. `wgwrap build` generates this Dockerfile:
