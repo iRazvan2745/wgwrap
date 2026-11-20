@@ -1,0 +1,66 @@
+# On a v* tag: test, push the multi-arch wgwrap-init image to this Forgejo's
+# registry, and publish a release with wgwrap CLI binaries whose default
+# --init-image points at that image.
+#
+# Registry auth: without secrets the built-in job token is used, which needs
+# package write in Settings → Actions → Authorized Integrations. Otherwise set
+# the secret REGISTRY_TOKEN (a token with write:package) and optionally the
+# variable REGISTRY_USERNAME.
+on:
+  push:
+    tags: ["v*"]
+
+env:
+  MISE_TRUSTED_CONFIG_PATHS: ${{ github.workspace }} # mise.toml uses exec(), which needs trust
+
+jobs:
+  release:
+    runs-on: fc-4vcpu-8gb
+    env:
+      VERSION: ${{ github.ref_name }}
+    steps:
+      - uses: https://data.forgejo.org/actions/checkout@v4
+      - uses: https://github.com/jdx/mise-action@v2
+      - run: mise run lint ::: test
+
+      - name: Image name
+        run: |
+          host=${GITHUB_SERVER_URL#*://}
+          echo "INIT_IMAGE=$host/$(echo "$GITHUB_REPOSITORY_OWNER" | tr A-Z a-z)/wgwrap-init" >> "$GITHUB_ENV"
+          echo "REGISTRY=$host" >> "$GITHUB_ENV"
+
+      - name: Log in to the registry
+        env: # secrets go in through env, never pasted into the script
+          USERNAME: ${{ vars.REGISTRY_USERNAME || github.actor }}
+          PASSWORD: ${{ secrets.REGISTRY_TOKEN || secrets.GITHUB_TOKEN }}
+        run: echo "$PASSWORD" | docker login "$REGISTRY" -u "$USERNAME" --password-stdin
+
+      # A docker-container builder can push multi-platform images on any daemon. The
+      # Dockerfile cross-compiles and the final stage has no RUN, so no QEMU is needed.
+      - name: Push wgwrap-init (amd64, arm64, arm/v7)
+        run: |
+          docker buildx create --use --name wgwrap
+          mise run image-multiarch
+          docker buildx imagetools create -t "$INIT_IMAGE:latest" "$INIT_IMAGE:$VERSION"
+
+      - name: Build CLI binaries
+        run: |
+          mkdir dist
+          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
+            GOOS=${target%/*} GOARCH=${target#*/} go build -trimpath \
+              -ldflags="-s -w -X main.version=$VERSION -X main.defaultInitImage=$INIT_IMAGE" \
+              -o "dist/wgwrap_${VERSION}_${target%/*}_${target#*/}" ./cmd/wgwrap
+          done
+          (cd dist && sha256sum * > SHA256SUMS)
+
+      - name: Publish release
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          api="$GITHUB_SERVER_URL/api/v1/repos/$GITHUB_REPOSITORY"
+          body=$(printf 'Init image: `%s:%s` (linux/amd64, arm64, arm/v7)\n\n```\nwgwrap build nginx:latest -t nginx-wg\ndocker run --cap-add NET_ADMIN -v ./wg0.conf:/etc/wireguard/wg0.conf:ro nginx-wg\n```\n' "$INIT_IMAGE" "$VERSION")
+          id=$(jq -n --arg tag "$VERSION" --arg body "$body" '{tag_name: $tag, name: $tag, body: $body}' |
+            curl -sSf -X POST -H "Authorization: token $TOKEN" -H "Content-Type: application/json" -d @- "$api/releases" | jq -r .id)
+          for f in dist/*; do
+            curl -sSf -X POST -H "Authorization: token $TOKEN" -F "attachment=@$f" "$api/releases/$id/assets?name=$(basename "$f")" >/dev/null
+          done
